@@ -20,7 +20,7 @@ Creare un tool leggero, immediato e multipiattaforma (**Windows 10/11** e **Linu
   * Mantenere la compatibilità con la sintassi **C# 5** (non usare *expression-bodied properties* `=>` o string interpolation `$""`, usare `string.Format` e `{ get { return ...; } }`) così `csc.exe` integrato in Windows compila sempre senza errori.
   * Comando di compilazione:
     ```powershell
-    & "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /target:winexe /optimize+ /out:"C:\Users\Marcello\.gemini\antigravity\scratch\QuickPing\QuickPing.exe" "C:\Users\Marcello\.gemini\antigravity\scratch\QuickPing\QuickPing.cs"
+    & "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /target:winexe /optimize+ /out:"E:\Progetti\Application\mio\c#\QuickPing\QuickPing.exe" "E:\Progetti\Application\mio\c#\QuickPing\QuickPing.cs"
     ```
 * **Meccanismo Hook & Appunti su Windows**:
   * Usa un Low-Level Mouse Hook (`WH_MOUSE_LL` / `SetWindowsHookEx`).
