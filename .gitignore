@@ -1,0 +1,8 @@
+# File temporanei di sostituzione binario Windows in esecuzione
+*.old.exe
+*.pdb
+
+# Python / Linux temporanei
+__pycache__/
+*.py[cod]
+.DS_Store
