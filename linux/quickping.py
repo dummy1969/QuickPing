@@ -228,7 +228,6 @@ class FloatingPingPopup(Gtk.Window):
         pos_x = max(10, x - 30)
         pos_y = max(10, y - h - 16)
         self.move(pos_x, pos_y)
-        self.present_with_time(Gdk.CURRENT_TIME)
 
         if self.hide_timer_id is not None:
             GLib.source_remove(self.hide_timer_id)
@@ -713,15 +712,19 @@ class QuickPingLinuxApp:
     def _setup_selection_monitoring(self):
         """
         Monitora la selezione primaria di Linux (PRIMARY selection):
-        su Linux (sia X11 che Wayland) qualsiasi testo evidenziato col mouse
-        finisce automaticamente nel buffer PRIMARY senza bisogno di Ctrl+C.
+        usato solo nella Modalità 3 (Popup automatico senza tasto destro).
+        Nelle Modalità 1 e 2 la lettura avviene esclusivamente al clic del Tasto Destro/Centrale,
+        così da non interrogare mai wl-paste/xclip o il clipboard durante i cambi di focus.
         """
+        self.has_selection_candidate = False
+        self.selection_candidate_at = 0.0
         self.primary_clip = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY)
         self.primary_clip.connect("owner-change", self._on_primary_owner_change)
 
     def _on_primary_owner_change(self, *_args):
-        # Quando l'utente seleziona del testo in qualsiasi finestra
-        GLib.timeout_add(60, self._check_primary_selection)
+        # Esegue la lettura automatica SOLO se l'utente ha scelto esplicitamente la Modalità 3
+        if self.mode == TriggerMode.POPUP_ON_SELECTION:
+            GLib.timeout_add(60, self._check_primary_selection)
 
     def _check_primary_selection(self):
         text = self._read_primary_selection()
@@ -826,7 +829,8 @@ class QuickPingLinuxApp:
         prev_left = False
         prev_right = False
         prev_middle = False
-        drag_dist = 0
+        drag_dx = 0
+        drag_dy = 0
         last_left_up_time = 0.0
 
         try:
@@ -848,26 +852,37 @@ class QuickPingLinuxApp:
                     middle = bool(buttons & 0x04)
 
                     if left:
-                        drag_dist += abs(dx) + abs(dy)
+                        drag_dx += abs(dx)
+                        drag_dy += abs(dy)
 
-                    # Rilascio tasto sinistro dopo trascinamento o doppio/triplo clic
+                    # Rilascio tasto sinistro dopo trascinamento orizzontale o doppio/triplo clic
                     if prev_left and not left:
                         now = time.time()
                         is_dbl_click = (now - last_left_up_time) <= 0.45
+                        is_text_drag = (drag_dx >= 20 and drag_dy <= 40)
                         last_left_up_time = now
-                        if drag_dist >= 5 or is_dbl_click:
-                            GLib.timeout_add(70, self._check_primary_selection)
+                        if is_text_drag or is_dbl_click:
+                            self.has_selection_candidate = True
+                            self.selection_candidate_at = now
+                            if self.mode == TriggerMode.POPUP_ON_SELECTION:
+                                GLib.timeout_add(70, self._check_primary_selection)
                         else:
+                            self.has_selection_candidate = False
                             self.detected_target = None
-                        drag_dist = 0
+                        drag_dx = 0
+                        drag_dy = 0
 
                     # Rilascio Tasto Destro
                     if prev_right and not right:
-                        GLib.idle_add(self._on_global_right_click)
+                        if self.has_selection_candidate and (time.time() - self.selection_candidate_at) <= 25.0:
+                            self.has_selection_candidate = False
+                            GLib.idle_add(self._on_global_right_click)
 
                     # Rilascio Tasto Centrale (Rotellina)
                     if prev_middle and not middle:
-                        GLib.idle_add(self._on_global_middle_click)
+                        if self.has_selection_candidate and (time.time() - self.selection_candidate_at) <= 25.0:
+                            self.has_selection_candidate = False
+                            GLib.idle_add(self._on_global_middle_click)
 
                     prev_left = left
                     prev_right = right
@@ -877,19 +892,12 @@ class QuickPingLinuxApp:
 
     def _on_global_right_click(self):
         self._refresh_cursor_position()
-        # Controlla subito la selezione primaria
+        # Legge il buffer PRIMARY solo ora che l'utente ha effettivamente premuto il Tasto Destro
         text = self._read_primary_selection()
         target = extract_target_from_text(text)
         if target:
             self.detected_target = target
             self.detected_at = time.time()
-
-        has_recent = (
-            self.detected_target is not None
-            and (time.time() - self.detected_at) < 30.0
-        )
-        if has_recent:
-            target = self.detected_target
             if self.mode == TriggerMode.DIRECT_ON_RIGHT_CLICK:
                 self.detected_target = None
                 self.open_ping_window(target)
@@ -899,8 +907,8 @@ class QuickPingLinuxApp:
 
     def _on_global_middle_click(self):
         text = self._read_primary_selection()
-        target = extract_target_from_text(text) or self.detected_target
-        if target and (time.time() - self.detected_at) < 25.0:
+        target = extract_target_from_text(text)
+        if target:
             self.detected_target = None
             self.open_ping_window(target)
         return False

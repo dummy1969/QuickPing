@@ -40,7 +40,7 @@ namespace QuickPing
             catch { }
 
             bool createdNew;
-            _mutex = new Mutex(true, "QuickPing_SingleInstance_Mutex_v3", out createdNew);
+            _mutex = new Mutex(true, "QuickPing_SingleInstance_Mutex_v4", out createdNew);
             if (!createdNew)
             {
                 MessageBox.Show("QuickPing è già in esecuzione nella barra di sistema (vicino all'orologio).",
@@ -128,6 +128,7 @@ namespace QuickPing
 
         // Stato selezione mouse
         private Point _lButtonDownPt;
+        private IntPtr _lButtonDownFgWindow = IntPtr.Zero;
         private int _lastLButtonUpTick;
         private Point _lastLButtonUpPt;
         private bool _hasSelectionCandidate = false;
@@ -328,6 +329,7 @@ namespace QuickPing
                 if (msg == WM_LBUTTONDOWN)
                 {
                     _lButtonDownPt = pt;
+                    _lButtonDownFgWindow = GetForegroundWindow();
                     if (_popup != null && _popup.Visible)
                     {
                         if (_popup.Bounds.Contains(pt))
@@ -351,12 +353,13 @@ namespace QuickPing
                     int now = Environment.TickCount;
                     int dx = Math.Abs(pt.X - _lButtonDownPt.X);
                     int dy = Math.Abs(pt.Y - _lButtonDownPt.Y);
-                    // Un indirizzo IP o hostname si seleziona in orizzontale (dx >= 7, dy <= 35) o con doppio/triplo clic
-                    bool isTextDrag = (dx >= 7 && dy <= 35);
+                    // Richiede un trascinamento orizzontale reale (>= 32px) e che il clic non sia servito a cambiare finestra attiva
+                    bool sameWindow = (_lButtonDownFgWindow != IntPtr.Zero && _lButtonDownFgWindow == GetForegroundWindow());
+                    bool isTextDrag = sameWindow && (dx >= 32 && dy <= 28);
 
                     int dblDx = Math.Abs(pt.X - _lastLButtonUpPt.X);
                     int dblDy = Math.Abs(pt.Y - _lastLButtonUpPt.Y);
-                    bool isDoubleClick = (now - _lastLButtonUpTick <= SystemInformation.DoubleClickTime) && (dblDx <= 12 && dblDy <= 12);
+                    bool isDoubleClick = sameWindow && (now - _lastLButtonUpTick <= SystemInformation.DoubleClickTime) && (dblDx <= 10 && dblDy <= 10);
 
                     _lastLButtonUpTick = now;
                     _lastLButtonUpPt = pt;
