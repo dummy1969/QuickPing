@@ -40,7 +40,7 @@ namespace QuickPing
             catch { }
 
             bool createdNew;
-            _mutex = new Mutex(true, "QuickPing_SingleInstance_Mutex_v2", out createdNew);
+            _mutex = new Mutex(true, "QuickPing_SingleInstance_Mutex_v3", out createdNew);
             if (!createdNew)
             {
                 MessageBox.Show("QuickPing è già in esecuzione nella barra di sistema (vicino all'orologio).",
@@ -114,6 +114,9 @@ namespace QuickPing
 
         private const int VK_SHIFT = 0x10;
         private const int VK_CONTROL = 0x11;
+        private const int VK_MENU = 0x12; // Alt
+        private const int VK_LWIN = 0x5B;
+        private const int VK_RWIN = 0x5C;
         private const byte VK_C = 0x43;
         private const uint KEYEVENTF_KEYUP = 0x0002;
 
@@ -127,6 +130,8 @@ namespace QuickPing
         private Point _lButtonDownPt;
         private int _lastLButtonUpTick;
         private Point _lastLButtonUpPt;
+        private bool _hasSelectionCandidate = false;
+        private int _selectionCandidateTick = 0;
         private string _detectedIp;
         private DateTime _detectedAt = DateTime.MinValue;
         private bool _isCapturingClipboard = false;
@@ -346,81 +351,113 @@ namespace QuickPing
                     int now = Environment.TickCount;
                     int dx = Math.Abs(pt.X - _lButtonDownPt.X);
                     int dy = Math.Abs(pt.Y - _lButtonDownPt.Y);
-                    bool isDrag = (dx >= 5 || dy >= 4);
+                    // Un indirizzo IP o hostname si seleziona in orizzontale (dx >= 7, dy <= 35) o con doppio/triplo clic
+                    bool isTextDrag = (dx >= 7 && dy <= 35);
 
                     int dblDx = Math.Abs(pt.X - _lastLButtonUpPt.X);
                     int dblDy = Math.Abs(pt.Y - _lastLButtonUpPt.Y);
                     bool isDoubleClick = (now - _lastLButtonUpTick <= SystemInformation.DoubleClickTime) && (dblDx <= 12 && dblDy <= 12);
-                    bool isShiftClick = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 
                     _lastLButtonUpTick = now;
                     _lastLButtonUpPt = pt;
 
-                    if (isDrag || isDoubleClick || isShiftClick)
+                    // Se Shift, Alt o Win sono premuti (es. Shift+Clic in Outlook per selezionare più email),
+                    // NON attivare mai la cattura per non generare combinazioni come Ctrl+Shift+C!
+                    if (IsModifierKeyPressed())
                     {
-                        _selectionTimer.Stop();
-                        _selectionTimer.Start();
+                        _hasSelectionCandidate = false;
+                        _detectedIp = null;
+                    }
+                    else if (isTextDrag || isDoubleClick)
+                    {
+                        _hasSelectionCandidate = true;
+                        _selectionCandidateTick = now;
+
+                        // Invia Ctrl+C al rilascio del tasto sinistro SOLO se l'utente ha scelto esplicitamente la Modalità 3
+                        if (CurrentMode == TriggerMode.PopupOnSelection)
+                        {
+                            _selectionTimer.Stop();
+                            _selectionTimer.Start();
+                        }
                     }
                     else
                     {
+                        _hasSelectionCandidate = false;
                         _detectedIp = null;
                     }
                 }
-                else if (msg == WM_RBUTTONUP)
+                else if (msg == WM_RBUTTONDOWN)
                 {
                     bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-                    bool hasRecentIp = !string.IsNullOrEmpty(_detectedIp) && (DateTime.UtcNow - _detectedAt).TotalSeconds < 30;
+                    bool candidateValid = _hasSelectionCandidate && (Environment.TickCount - _selectionCandidateTick <= 25000);
 
-                    if (ctrlDown)
+                    if ((ctrlDown || candidateValid) && !IsModifierKeyPressed())
                     {
-                        // Ctrl + Tasto Destro: forza cattura e apertura immediata
-                        string ipToOpen = hasRecentIp ? _detectedIp : null;
+                        _hasSelectionCandidate = false;
+                        Point rightClickPt = pt;
                         _popup.BeginInvoke(new Action(async () =>
                         {
-                            if (string.IsNullOrEmpty(ipToOpen))
-                                ipToOpen = await CaptureSelectedIpNowAsync();
-                            if (!string.IsNullOrEmpty(ipToOpen))
-                                OpenPingWindow(ipToOpen);
-                        }));
-                    }
-                    else if (hasRecentIp)
-                    {
-                        string ip = _detectedIp;
-                        _popup.BeginInvoke(new Action(() =>
-                        {
-                            if (CurrentMode == TriggerMode.DirectOnRightClick)
+                            string ip = await CaptureSelectedIpNowAsync();
+                            if (!string.IsNullOrEmpty(ip))
                             {
-                                _detectedIp = null;
-                                OpenPingWindow(ip);
-                            }
-                            else
-                            {
-                                _popup.ShowNearCursor(ip, pt);
+                                _detectedIp = ip;
+                                _detectedAt = DateTime.UtcNow;
+                                if (ctrlDown || CurrentMode == TriggerMode.DirectOnRightClick)
+                                {
+                                    _detectedIp = null;
+                                    OpenPingWindow(ip);
+                                }
+                                else
+                                {
+                                    // Attende il rilascio del tasto destro + 25ms così il bottone compare sopra il menu contestuale dell'app
+                                    for (int w = 0; w < 25 && (GetAsyncKeyState(0x02) & 0x8000) != 0; w++)
+                                    {
+                                        await Task.Delay(15);
+                                    }
+                                    await Task.Delay(25);
+                                    _popup.ShowNearCursor(ip, rightClickPt);
+                                }
                             }
                         }));
                     }
                 }
                 else if (msg == WM_MBUTTONUP)
                 {
-                    // Tasto centrale (rotellina) su un IP appena selezionato -> apre subito il Ping!
+                    bool candidateValid = _hasSelectionCandidate && (Environment.TickCount - _selectionCandidateTick <= 25000);
                     bool hasRecentIp = !string.IsNullOrEmpty(_detectedIp) && (DateTime.UtcNow - _detectedAt).TotalSeconds < 25;
-                    if (hasRecentIp)
+                    if ((candidateValid || hasRecentIp) && !IsModifierKeyPressed())
                     {
-                        string ip = _detectedIp;
-                        _detectedIp = null;
-                        _popup.BeginInvoke(new Action(() => OpenPingWindow(ip)));
+                        _hasSelectionCandidate = false;
+                        _popup.BeginInvoke(new Action(async () =>
+                        {
+                            string ip = hasRecentIp ? _detectedIp : await CaptureSelectedIpNowAsync();
+                            _detectedIp = null;
+                            if (!string.IsNullOrEmpty(ip))
+                                OpenPingWindow(ip);
+                        }));
                     }
                 }
             }
             return CallNextHookEx(_hookId, nCode, wParam, lParam);
         }
 
+        private static bool IsModifierKeyPressed()
+        {
+            // Verifica che Shift, Alt o Win NON siano premuti
+            return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0
+                || (GetAsyncKeyState(VK_MENU) & 0x8000) != 0
+                || (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0
+                || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+        }
+
         private async void OnSelectionTimerTick(object sender, EventArgs e)
         {
             _selectionTimer.Stop();
 
-            // Non eseguire se i tasti del mouse sono ancora premuti
-            if ((GetAsyncKeyState(0x01) & 0x8000) != 0 || (GetAsyncKeyState(0x02) & 0x8000) != 0)
+            // Non eseguire se i tasti del mouse o modificatori (Shift/Alt/Win) sono premuti
+            if ((GetAsyncKeyState(0x01) & 0x8000) != 0
+                || (GetAsyncKeyState(0x02) & 0x8000) != 0
+                || IsModifierKeyPressed())
                 return;
 
             string ip = await CaptureSelectedIpNowAsync();
@@ -442,7 +479,7 @@ namespace QuickPing
 
         private async Task<string> CaptureSelectedIpNowAsync()
         {
-            if (_isCapturingClipboard) return null;
+            if (_isCapturingClipboard || IsModifierKeyPressed()) return null;
 
             IntPtr fg = GetForegroundWindow();
             if (fg == IntPtr.Zero) return null;
@@ -451,8 +488,12 @@ namespace QuickPing
             GetClassName(fg, sbClass, sbClass.Capacity);
             string cls = sbClass.ToString();
 
-            // Evita di inviare Ctrl+C a Excel o console classiche dove Ctrl+C interrompe i processi
-            if (cls.IndexOf("XLMAIN", StringComparison.OrdinalIgnoreCase) >= 0)
+            // Evita di inviare Ctrl+C a Excel, Esplora File / Desktop o console
+            if (cls.IndexOf("XLMAIN", StringComparison.OrdinalIgnoreCase) >= 0
+                || cls.IndexOf("CabinetWClass", StringComparison.OrdinalIgnoreCase) >= 0
+                || cls.IndexOf("ExploreWClass", StringComparison.OrdinalIgnoreCase) >= 0
+                || cls.IndexOf("Progman", StringComparison.OrdinalIgnoreCase) >= 0
+                || cls.IndexOf("WorkerW", StringComparison.OrdinalIgnoreCase) >= 0)
                 return null;
 
             bool isConsole = cls.IndexOf("ConsoleWindowClass", StringComparison.OrdinalIgnoreCase) >= 0
@@ -465,6 +506,8 @@ namespace QuickPing
                 {
                     return ExtractIpFromText(SafeGetClipboardText());
                 }
+
+                if (IsModifierKeyPressed()) return null;
 
                 string oldText = SafeGetClipboardText();
                 SafeClearClipboard();
@@ -495,6 +538,9 @@ namespace QuickPing
 
         private static void SendCtrlC()
         {
+            // Sicurezza aggiuntiva: non inviare mai Ctrl+C se Shift, Alt o Win sono premuti
+            if (IsModifierKeyPressed()) return;
+
             bool ctrlAlreadyDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
             if (!ctrlAlreadyDown)
                 keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);
